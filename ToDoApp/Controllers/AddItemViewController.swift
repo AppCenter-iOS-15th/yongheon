@@ -2,15 +2,12 @@ import UIKit
 
 import SnapKit
 
-protocol AddItemDelegate: AnyObject {
-  func addItem(item: Info)
-  func editItem(item: Info)
-}
-
-final class AddItemViewController: UIViewController {
+final class AddItemViewController: UIViewController, UIScrollViewDelegate {
   weak var delegate: AddItemDelegate?
+  var itemToEdit: ToDoData?
   
-  var itemToEdit: Info?
+  // 모델(저장 데이터를 관리하는 코어데이터)
+  let toDoManager = CoreDataManager.shared
   
   private let topImage: UIImageView = {
     let view = UIImageView()
@@ -61,7 +58,7 @@ final class AddItemViewController: UIViewController {
   
   private lazy var titleTextView: UITextView = {
     let tv = UITextView()
-//    tv.text = "제목을 입력하세요"
+    //    tv.text = "제목을 입력하세요"
     tv.textColor = UIColor.lightGray
     tv.font = UIFont.systemFont(ofSize: 15)
     tv.layer.borderWidth = 1.0
@@ -72,7 +69,6 @@ final class AddItemViewController: UIViewController {
     return tv
   }()
   
-  
   var priorityChoice: UISegmentedControl = {
     let items = PriorityOptions.allCases.map { $0.rawValue }
     let segmentedControl = UISegmentedControl(items: items)
@@ -81,8 +77,7 @@ final class AddItemViewController: UIViewController {
     return segmentedControl
   }()
   
-  
-  private let deadLineDatePicker: UIDatePicker = {
+  var deadLineDatePicker: UIDatePicker = {
     let picker = UIDatePicker()
     picker.datePickerMode = .date
     return picker
@@ -90,7 +85,7 @@ final class AddItemViewController: UIViewController {
   
   private lazy var memoTextView: UITextView = {
     let tv = UITextView()
-//    tv.text = "내용을 입력하세요"
+    //    tv.text = "내용을 입력하세요"
     tv.textColor = UIColor.lightGray
     tv.font = UIFont.systemFont(ofSize: 15)
     tv.layer.borderWidth = 1.0
@@ -113,27 +108,6 @@ final class AddItemViewController: UIViewController {
     checkData()
   }
   
-  func checkData(){
-    if let itemToEdit = itemToEdit {
-      titleTextView.textColor = .black
-      memoTextView.textColor = .black
-      titleTextView.text = itemToEdit.title
-      memoTextView.text = itemToEdit.memo
-
-      let datestring = itemToEdit.date
-      let dateFormatter = DateFormatter()
-      dateFormatter.dateFormat = "yyyy-MM-dd"
-      if let date = dateFormatter.date(from: datestring) {
-          deadLineDatePicker.date = date
-      }
-
-      if let priorityOption = PriorityOptions(rawValue: itemToEdit.priority!) {
-        let selectedIndex = PriorityOptions.allCases.firstIndex(of: priorityOption) ?? 0
-        priorityChoice.selectedSegmentIndex = selectedIndex
-      }
-      completedSwitch.isOn = itemToEdit.isCompleted
-    }
-  }
   // MARK: - navigationbar 설정
   func setNavigationbar(){
     navigationItem.rightBarButtonItem = UIBarButtonItem(barButtonSystemItem: .done,
@@ -142,7 +116,7 @@ final class AddItemViewController: UIViewController {
   }
   
   // MARK: - view 계층 설정
-  func setupLayout(){
+  func setupLayout() {
     [
       completedLabel,
       titleLabel,
@@ -185,7 +159,7 @@ final class AddItemViewController: UIViewController {
       make.top.equalTo(completedLabel.snp.bottom).offset(10)
       make.leading.equalToSuperview().offset(20)
     }
-  
+    
     titleTextView.snp.makeConstraints { make in
       make.top.equalTo(titleLabel)
       make.trailing.equalToSuperview().offset(-20)
@@ -231,75 +205,80 @@ final class AddItemViewController: UIViewController {
   }
 }
 
-// MARK: - 함수
 extension AddItemViewController {
-  // mainviewcontroller 말고 delegate로 하는거로 바꿔보기
-  @objc func addItem() {
-      guard let mainViewController = delegate as? MainViewController else { return }
+  // MARK: - 기존 데이터 확인
+  func checkData() {
+    if let itemToEdit = itemToEdit {
+      titleTextView.textColor = .black
+      memoTextView.textColor = .black
+      titleTextView.text = itemToEdit.title
+      memoTextView.text = itemToEdit.memo
       
-    let titleIsEmpty = emptyCheck(titleTextView).isEmpty
-    let memoIsEmpty = emptyCheck(memoTextView).isEmpty
-    
-    if titleIsEmpty || memoIsEmpty { return
-}
-      
-      if let itemToEdit = self.itemToEdit {
-          let editedItem = Info(id: itemToEdit.id,
-                                title: emptyCheck(titleTextView),
-                                priority: PriorityOptions.allCases[priorityChoice.selectedSegmentIndex].rawValue,
-                                memo: emptyCheck(memoTextView),
-                                date: convertDate(),
-                                isCompleted: switchChanged(completedSwitch))
-          mainViewController.editItem(item: editedItem)
-      } else {
-          let newItem = Info(id: mainViewController.tableView.rowsCount + 1,
-                              title: emptyCheck(titleTextView),
-                              priority: PriorityOptions.allCases[priorityChoice.selectedSegmentIndex].rawValue,
-                              memo: emptyCheck(memoTextView),
-                              date: convertDate(),
-                              isCompleted: switchChanged(completedSwitch))
-          mainViewController.addItem(item: newItem)
+      let datestring = itemToEdit.date
+      let dateFormatter = DateFormatter()
+      dateFormatter.dateFormat = "yyyy-MM-dd"
+      if let date = dateFormatter.date(from: datestring ?? "") {
+        deadLineDatePicker.date = date
       }
-      navigationController?.popViewController(animated: true)
-  }
-
-  
-  // MARK: - 공백확인 함수
-  func emptyCheck(_ textField: UITextView) -> (String) {
-    guard let info = textField.text, !info.isEmpty else {
-      let alert = UIAlertController(title: "Error",
-                                    message: "Please enter some information",
-                                    preferredStyle: .alert)
       
+      if let priorityOption = PriorityOptions(rawValue: itemToEdit.priority!) {
+        let selectedIndex = PriorityOptions.allCases.firstIndex(of: priorityOption) ?? 0
+        priorityChoice.selectedSegmentIndex = selectedIndex
+      }
+      completedSwitch.isOn = itemToEdit.isCompleted
+    }
+  }
+  
+  // MARK: - 셀 추가 및 수정
+  @objc func addItem() {
+    guard let title = UITextView().nonEmpty(titleTextView.text),
+          let memo = UITextView().nonEmpty(memoTextView.text) else {
+      let alert = UIAlertController(title: "Error",
+                                    message: "Please enter some info",
+                                    preferredStyle: .alert)
       alert.addAction(UIAlertAction(title: "Dismiss", style: .cancel, handler: nil))
       present(alert, animated: true, completion: nil)
-      return ""
+      return
     }
-    return info
-  }
-  
-
-  // MARK: - 날짜 -> String 변환함수
-  func convertDate() -> String {
-    let dateFormatter = DateFormatter()
-    dateFormatter.dateFormat = "yyyy-MM-dd"
     
-    let deadLine = dateFormatter.string(from: deadLineDatePicker.date)
-    return deadLine
+    if let item = itemToEdit {
+      // 기존의 아이템 수정
+      toDoManager.updateToDo(existingToDoData: item,
+                             title: title,
+                             memo: memo,
+                             date: Date().convertDateToString(date: deadLineDatePicker.date),
+                             isCompleted: completedSwitch.isOn,
+                             priority: PriorityOptions.allCases[priorityChoice.selectedSegmentIndex].rawValue){
+        self.doneButtonClicked()
+      }
+      
+    } else {
+      // 아이템 추가
+      toDoManager.saveToDoData(title: title,
+                               memo: memo,
+                               date: Date().convertDateToString(date: deadLineDatePicker.date),
+                               isCompleted: completedSwitch.isOn,
+                               priority: PriorityOptions.allCases[priorityChoice.selectedSegmentIndex].rawValue) {
+        self.doneButtonClicked()
+      }
+    }
   }
   
-  // MARK: - 스위치 true/false 전달함수
-  func switchChanged(_ sender: UISwitch) -> Bool {
-    if sender.isOn {
-      return true
-    } else {
-      return false
+  // MARK: - mainview로 이동하는 함수
+  @objc func doneButtonClicked() {
+    if let viewControllers = navigationController?.viewControllers {
+      for vc in viewControllers {
+        if let mainVC = vc as? MainViewController {
+          navigationController?.popToViewController(mainVC, animated: true)
+          break
+        }
+      }
     }
   }
 }
 
+// MARK: - empty 일 때
 extension AddItemViewController: UITextViewDelegate {
-  
   func textViewDidBeginEditing(_ textView: UITextView) {
     if textView.textColor == UIColor.lightGray {
       textView.text = nil
@@ -315,14 +294,10 @@ extension AddItemViewController: UITextViewDelegate {
   }
 }
 
-extension UITextView {
-  func adjustUITextViewHeight() {
-    self.translatesAutoresizingMaskIntoConstraints = true
-    self.sizeToFit()
-    self.isScrollEnabled = false
-  }
-}
 
+
+
+// MARK: - Preview
 #if DEBUG
 import SwiftUI
 struct ViewControllerRepresentable: UIViewControllerRepresentable {
